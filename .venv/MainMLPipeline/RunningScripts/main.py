@@ -85,8 +85,54 @@ from sklearn.base import BaseEstimator, TransformerMixin, clone
 
 
 # %%
-# ------------------ HyperParamaters ------------------
+# ==================== TRAINING CONFIGURATION ====================
+# Central configuration for all ML pipeline hyperparameters.
+# Edit this section to change all training behavior.
+# ================================================================
+# %%
+TRAINING_CONFIG = {
+    # Vectorizer hyperparameters
+    "vectorizer": {
+        "word_ngram_range": (1, 2),  # Word n-gram range (min, max)
+        "word_max_features": 5000,   # Maximum word features
+        "char_ngram_range": (3, 5),  # Character n-gram range (min, max)
+        "char_max_features": 2500,   # Maximum character features
+        "use_char": False,            # Enable character n-grams
+        "min_df": 2,                 # Minimum document frequency for TF-IDF
+    },
+    
+    # Grid search hyperparameter grids
+    "grid_search": {
+        "word_ngram_range_grid": [(1, 1), (1, 2)],  # Grid for word n-gram range
+        "word_max_features_grid": [75, 100, 125, 150, 200, 300, 400, 500, 600, 700, 1000],  # Grid for word max_features
+        "char_ngram_range_grid": [(3, 5)],  # Grid for char n-gram range
+        "char_max_features_grid": [2000, 5000],  # Grid for char max_features
+        "C_grid": [  0.003, 0.01, 0.03, 1.3],  # Regularization C values 0.1, 0.3, 0.5, 0.7, 0.9, 1.0,
+    },
+    
+    # Model hyperparameters
+    "model": {
+        "max_iter": 2000,            # Maximum iterations for LogisticRegression
+        "solver": "saga",            # Solver for LogisticRegression
+        "class_weight_balanced": True,  # Use balanced class weights
+        "random_state": 42,          # Random seed for reproducibility
+        "calibrate": True,           # Enable probability calibration
+        "calib_method": "sigmoid",   # Calibration method ("sigmoid" or "isotonic")
+        "calib_cv": 5,               # Cross-validation folds for calibration
+    },
+    
+    # Cross-validation hyperparameters
+    "cv": {
+        "n_splits": 5,               # Number of CV folds
+        "shuffle": True,              # Shuffle data before splitting
+        "random_state": 42,          # Random seed for CV splits
+        "scoring": "f1_macro",       # Scoring metric for GridSearchCV
+        "n_jobs": -1,                # Number of parallel jobs (-1 = all cores)
+        "verbose": 1,                # Verbosity level for GridSearchCV
+    },
+}
 
+# Other constants (not part of training config)
 MultyLablelMinPredictScoreForEval = 0.5
 CUTOFF = pd.Timestamp("2023-10-07")
 
@@ -143,7 +189,7 @@ p.add_argument("--max_features_word", type=int, default=5000)
 p.add_argument("--max_features_char", type=int, default=2500)
 p.add_argument("--ngram_word_max", type=int, default=2)
 p.add_argument("--no_calibrate", action="store_true", default=False, help="Disable probability calibration")
-p.add_argument("--output_dir", default="/content/drive/MyDrive/MyPapers/PTSD-MisDiagnosis/Info/output", help="Directory to write JSON artifacts")
+p.add_argument("--output_dir", default=r"C:\Users\sagil\GEAH\.venv\MainMLPipeline\output\sandboxoutput", help="Directory to write JSON artifacts")
 p.add_argument("--mask_sensitive_test", action="store_true", default=False, help="Run masking robustness test on post split")
 
 if "ipykernel" in sys.modules:
@@ -185,17 +231,27 @@ Y_pre, enc, classes = prepare_labels(pre["diagnosis"], multilabel=args.multilabe
 # %%
 # === Step 6: Define vectorizer & model =====================================================
 # - Word n-grams + optional char n-grams; linear model with optional calibration
-vec = build_vectorizer(
-    max_features_word=args.max_features_word,
-    ngram_word=(1, args.ngram_word_max),
-    use_char=args.use_char,
-    max_features_char=args.max_features_char,
-    ngram_char=(3, 5),
-)
+# Override config with CLI args if provided
+vec_config = TRAINING_CONFIG["vectorizer"].copy()
+if hasattr(args, "max_features_word") and args.max_features_word:
+    vec_config["word_max_features"] = args.max_features_word
+if hasattr(args, "ngram_word_max") and args.ngram_word_max:
+    vec_config["word_ngram_range"] = (1, args.ngram_word_max)
+if hasattr(args, "use_char"):
+    vec_config["use_char"] = args.use_char
+if hasattr(args, "max_features_char") and args.max_features_char:
+    vec_config["char_max_features"] = args.max_features_char
+
+vec = build_vectorizer(config=vec_config)
+
+model_config = TRAINING_CONFIG["model"].copy()
+if hasattr(args, "no_calibrate"):
+    model_config["calibrate"] = not args.no_calibrate
+
 model = build_model(
     base_model=args.base_model,
     multilabel=args.multilabel,
-    calibrate=not args.no_calibrate,
+    config=model_config,
 )
 
 
@@ -206,11 +262,19 @@ model = build_model(
 
 
 print("args.multilabel:", args.multilabel)
-print("Y_pre shape:", getattr(Y_pre, "shape", None))
+#print("Y_pre shape:", getattr(Y_pre, "shape", None))
 
 best, info = train_with_cv(
-    pre["text"], Y_pre, vec, model, classes, args.base_model, args.multilabel, args.use_char
+    pre["text"], Y_pre, vec, model, classes, args.base_model, args.multilabel,
+    config=TRAINING_CONFIG
 )
+
+print("\n=== Grid Search Best Parameters ===")
+for param, value in info["best_params"].items():
+    print(f"{param}: {value}")
+print(f"Best CV Score (f1_macro): {info['best_score_macro_f1']:.4f}")
+print("=" * 40)
+
 with open(os.path.join(args.output_dir, "cv_best.json"), "w", encoding="utf-8") as f:
     json.dump(info, f, ensure_ascii=False, indent=2)
 
@@ -223,13 +287,7 @@ with open(os.path.join(args.output_dir, "cv_best.json"), "w", encoding="utf-8") 
 # %%
 # === Step 8: Lock feature space for drift/explainability ===================================
 # - Fit a clean vectorizer on all pre text to get stable feature names for analyses
-V = build_vectorizer(
-    max_features_word=args.max_features_word,
-    ngram_word=(1, args.ngram_word_max),
-    use_char=args.use_char,
-    max_features_char=args.max_features_char,
-    ngram_char=(3, 5),
-)
+V = build_vectorizer(config=vec_config)
 V.fit(pre["text"])
 
 # %% [markdown]
@@ -299,7 +357,7 @@ plot_aupr_per_class(
 # === Step 11: Fairness slices metrics ======================================================
 # - soldier_flag / gender / age_group; includes false PTSD rate per slice
 slices = eval_slices(
-    post.reset_index(drop=True), Y_post, y_prob_post, classes, args.multilabel,plots_dir=graphs_dir,do_plots = False
+    post.reset_index(drop=True), Y_post, y_prob_post, classes, args.multilabel,plots_dir=graphs_dir,do_plots = True,max_groups_per_col=10
 )
 with open(os.path.join(args.output_dir, "slices_post.json"), "w", encoding="utf-8") as f:
     json.dump(slices, f, ensure_ascii=False, indent=2)

@@ -75,18 +75,33 @@ __all__ = ["build_vectorizer", "build_model","train_with_cv","eval_probs","predi
 
 
 # ------------------ Vectorizers ------------------
-def build_vectorizer(max_features_word=50000,
-                     ngram_word=(1,2),
-                     use_char=True,
-                     max_features_char=30000,
-                     ngram_char=(3,5)):
+def build_vectorizer(config: Dict[str, Any] = None,
+                     max_features_word=None,
+                     ngram_word=None,
+                     use_char=None,
+                     max_features_char=None,
+                     ngram_char=None):
+    """
+    Build FeatureUnion vectorizer from config.
+    Accepts either a config dict or legacy keyword arguments (for backward compatibility).
+    """
+    # Use config if provided, otherwise fall back to kwargs or defaults
+    if config is None:
+        config = {}
+    
+    max_features_word = max_features_word or config.get("word_max_features", 50000)
+    ngram_word = ngram_word or config.get("word_ngram_range", (1, 2))
+    use_char = use_char if use_char is not None else config.get("use_char", True)
+    max_features_char = max_features_char or config.get("char_max_features", 30000)
+    ngram_char = ngram_char or config.get("char_ngram_range", (3, 5))
+    min_df = config.get("min_df", 2)
 
     # 1. Word TF-IDF
     word = ("word", TfidfVectorizer(
         analyzer="word",
         ngram_range=ngram_word,
         max_features=max_features_word,
-        min_df=2
+        min_df=min_df
     ))
 
     # 2. Character TF-IDF (Optional)
@@ -96,7 +111,7 @@ def build_vectorizer(max_features_word=50000,
             analyzer="char",
             ngram_range=ngram_char,
             max_features=max_features_char,
-            min_df=2
+            min_df=min_df
         ))
         transformer_list.append(char_tfidf)
 
@@ -125,23 +140,37 @@ def build_vectorizer(max_features_word=50000,
 def build_model(
     base_model: str = "logreg",
     multilabel: bool = False,
-    calibrate: bool = True,
-    class_weight_balanced: bool = True,
-    random_state: int = 42,
-    calib_method: str = "sigmoid",
-    calib_cv: int = 5,
+    config: Dict[str, Any] = None,
+    calibrate: bool = None,
+    class_weight_balanced: bool = None,
+    random_state: int = None,
+    calib_method: str = None,
+    calib_cv: int = None,
 ) -> Any:
     """
     Build an estimator for single-label or multilabel.
     If multilabel=True and calibrate=True, performs per-label calibration by:
       OneVsRestClassifier(CalibratedClassifierCV(base_estimator))
+    
+    Accepts either a config dict or legacy keyword arguments (for backward compatibility).
     """
+    # Use config if provided, otherwise fall back to kwargs or defaults
+    if config is None:
+        config = {}
+    
+    calibrate = calibrate if calibrate is not None else config.get("calibrate", True)
+    class_weight_balanced = class_weight_balanced if class_weight_balanced is not None else config.get("class_weight_balanced", True)
+    random_state = random_state if random_state is not None else config.get("random_state", 42)
+    calib_method = calib_method or config.get("calib_method", "sigmoid")
+    calib_cv = calib_cv if calib_cv is not None else config.get("calib_cv", 5)
+    max_iter = config.get("max_iter", 2000)
+    solver = config.get("solver", "saga")
 
     # 1) Choose base estimator
     if base_model == "logreg":
         base = LogisticRegression(
-            max_iter=2000,
-            solver="saga",
+            max_iter=max_iter,
+            solver=solver,
             class_weight="balanced" if class_weight_balanced else None,
             random_state=random_state,
         )
@@ -178,13 +207,19 @@ def build_model(
 # %%
 # ------------------ Training with CV ------------------
 
-def small_grid(base_model: str):
+def small_grid(base_model: str, config: Dict[str, Any] = None):
     """
-    Input: base_model (str) specifying estimator family.
+    Input: base_model (str) specifying estimator family, optional config dict.
     Output: dict hyperparameter grid for regularization C.
     Logic: return a compact, robust grid to minimize tuning footprint.
     """
-    return {"C": [ 0.003,0.001, 0.003, 0.01, 0.03, 0.1]}
+    if config is None:
+        config = {}
+    C_grid = config.get("C_grid", [0.003, 0.001, 0.003, 0.01, 0.03, 0.1])
+    return {"C": C_grid}
+
+# %%
+
 
 # %%
 
@@ -208,14 +243,29 @@ def train_with_cv(X_text: pd.Series,
                   classes: List[str],
                   base_model: str,
                   multilabel: bool,
-                  use_char: bool = False,
-                  n_splits: int = 5) -> Tuple[Any, Dict[str, Any]]:
+                  config: Dict[str, Any] = None,
+                  use_char: bool = None,
+                  n_splits: int = None) -> Tuple[Any, Dict[str, Any]]:
     """
-    Input: texts, encoded labels, vectorizer, estimator, metadata flags, CV splits.
+    Input: texts, encoded labels, vectorizer, estimator, metadata flags, config dict.
     Output: (best_pipeline, info_dict) containing best params and macro-F1.
     Logic: build Pipeline, define grids for vectorizer and C, run StratifiedKFold GridSearchCV, refit best.
     """
-
+    if config is None:
+        config = {}
+    
+    grid_config = config.get("grid_search", {})
+    cv_config = config.get("cv", {})
+    vectorizer_config = config.get("vectorizer", {})
+    
+    # Get values from config with fallbacks
+    use_char = use_char if use_char is not None else vectorizer_config.get("use_char", False)
+    n_splits = n_splits if n_splits is not None else cv_config.get("n_splits", 5)
+    shuffle = cv_config.get("shuffle", True)
+    random_state = cv_config.get("random_state", 42)
+    scoring = cv_config.get("scoring", "f1_macro")
+    n_jobs = cv_config.get("n_jobs", -1)
+    verbose = cv_config.get("verbose", 1)
 
     pipe = Pipeline([
         ("select", ColumnSelector("text")),
@@ -223,23 +273,19 @@ def train_with_cv(X_text: pd.Series,
         ("clf", model),
     ])
 
-    #param_grid = {
-    #    "vec__transformer_list__word__1__ngram_range": [(1,1), (1,2)],
-    #    "vec__transformer_list__word__1__max_features": [250,500, 1000,2500,7500],
-    #}
-
+    # Build param_grid from config
     param_grid = {
-        "vec__word__ngram_range": [(1,1), (1,2)],
-        "vec__word__max_features": [75,100,125,150,200,225, 300, 500, 750],
+        "vec__word__ngram_range": grid_config.get("word_ngram_range_grid", [(1, 1), (1, 2)]),
+        "vec__word__max_features": grid_config.get("word_max_features_grid", [75, 100, 125, 150, 200, 225, 300, 500, 750]),
     }
 
     if use_char:
         param_grid.update({
-            "vec__char__ngram_range": [(3,5)],          # או [(3,5), (3,6)]
-            "vec__char__max_features": [2000, 5000],    # טווח סביר להתחלה
+            "vec__char__ngram_range": grid_config.get("char_ngram_range_grid", [(3, 5)]),
+            "vec__char__max_features": grid_config.get("char_max_features_grid", [2000, 5000]),
         })
 
-    C_vals = small_grid(base_model)["C"]
+    C_vals = small_grid(base_model, grid_config)["C"]
     #for key in ["clf__base_estimator__C", "clf__estimator__C", "clf__C"]:
     #        param_grid[key] = C_vals
     #param_grid["clf__estimator__C"] = C_vals
@@ -256,17 +302,64 @@ def train_with_cv(X_text: pd.Series,
         param_grid["clf__C"] = C_vals
 
 
-    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-    search = GridSearchCV(
-        pipe,
-        param_grid=param_grid,
-        scoring="f1_macro",
-        cv=cv.split(X_text, stratify_labels(y_array)),
-        n_jobs=-1,
-        verbose=1,
-        refit=True,
-    )
+    # Calculate total number of fits for progress tracking
+    from itertools import product
+    param_combinations = list(product(*param_grid.values()))
+    total_fits = len(param_combinations) * n_splits
+    
+    print(f"\nStarting GridSearchCV: {len(param_combinations)} parameter combinations × {n_splits} CV folds = {total_fits} total fits")
+    print(f"Progress updates every 150 fits...\n")
+    
+    # Create progress callback for sklearn 1.3+ (if available)
+    # For older versions, we'll use verbose output
+    try:
+        from sklearn.model_selection import Callback
+        import sklearn
+        
+        class ProgressCallback(Callback):
+            """Callback to print progress every N fits."""
+            def __init__(self, print_interval: int = 150, total_fits: int = None):
+                self.print_interval = print_interval
+                self.total_fits = total_fits
+                self.fit_count = 0
+            
+            def on_fit_end(self, estimator, X, y, **kwargs):
+                """Called after each fit completes."""
+                self.fit_count += 1
+                if self.fit_count % self.print_interval == 0:
+                    total_str = f" / {self.total_fits}" if self.total_fits else ""
+                    print(f"Progress: {self.fit_count}{total_str} fits completed", flush=True)
+        
+        # Check if sklearn version supports callbacks (1.3+)
+        sklearn_version = tuple(map(int, sklearn.__version__.split(".")[:2]))
+        use_callbacks = sklearn_version >= (1, 3)
+    except (ImportError, AttributeError):
+        use_callbacks = False
+    
+    cv = StratifiedKFold(n_splits=n_splits, shuffle=shuffle, random_state=random_state)
+    
+    # Build GridSearchCV with callback if available, otherwise use verbose
+    gs_kwargs = {
+        "param_grid": param_grid,
+        "scoring": scoring,
+        "cv": cv.split(X_text, stratify_labels(y_array)),
+        "n_jobs": n_jobs,
+        "verbose": verbose if not use_callbacks else 0,  # Reduce verbose if using callback
+        "refit": True,
+    }
+    
+    if use_callbacks:
+        progress_callback = ProgressCallback(print_interval=150, total_fits=total_fits)
+        gs_kwargs["callbacks"] = [progress_callback]
+    
+    search = GridSearchCV(pipe, **gs_kwargs)
+    
     search.fit(pd.DataFrame({"text": X_text}), y_array)
+    
+    if use_callbacks:
+        print(f"\nGridSearchCV completed: {progress_callback.fit_count} fits finished\n")
+    else:
+        print(f"\nGridSearchCV completed: {total_fits} fits finished\n")
     best = search.best_estimator_
     info = {
         "best_params": search.best_params_,

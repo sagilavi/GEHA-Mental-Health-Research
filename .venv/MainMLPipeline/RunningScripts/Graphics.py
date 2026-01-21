@@ -47,6 +47,7 @@ from Utilities import (
 
 
 from Classes import ColumnSelector, ClinicalFeatureExtractor
+from Models import eval_probs
 
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import MaxAbsScaler
@@ -85,6 +86,7 @@ def eval_slices(
     slice_cols=("soldier_flag", "gender", "age_group"),
     do_plots: bool = True,
     plots_dir: str | None = None,
+    MultyLablelMinPredictScoreForEval: float = 0.5,
     plots_prefix: str = "pr",
     max_groups_per_col: int | None = None,
     figsize=(8, 6),

@@ -1,0 +1,26 @@
+{
+  "soldier_flag=False": {
+    "error": "name 'eval_probs' is not defined"
+  },
+  "soldier_flag=True": {
+    "error": "name 'eval_probs' is not defined"
+  },
+  "gender=זכר": {
+    "error": "name 'eval_probs' is not defined"
+  },
+  "gender=נקבה": {
+    "error": "name 'eval_probs' is not defined"
+  },
+  "age_group=<=25": {
+    "error": "name 'eval_probs' is not defined"
+  },
+  "age_group=26-40": {
+    "error": "name 'eval_probs' is not defined"
+  },
+  "age_group=41-60": {
+    "error": "name 'eval_probs' is not defined"
+  },
+  "age_group=60+": {
+    "error": "name 'eval_probs' is not defined"
+  }
+}
