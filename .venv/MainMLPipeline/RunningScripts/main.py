@@ -209,7 +209,7 @@ print("args.multilabel:", args.multilabel)
 print("Y_pre shape:", getattr(Y_pre, "shape", None))
 
 best, info = train_with_cv(
-    pre["text"], Y_pre, vec, model, classes, args.base_model, args.multilabel
+    pre["text"], Y_pre, vec, model, classes, args.base_model, args.multilabel, args.use_char
 )
 with open(os.path.join(args.output_dir, "cv_best.json"), "w", encoding="utf-8") as f:
     json.dump(info, f, ensure_ascii=False, indent=2)

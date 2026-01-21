@@ -208,6 +208,7 @@ def train_with_cv(X_text: pd.Series,
                   classes: List[str],
                   base_model: str,
                   multilabel: bool,
+                  use_char: bool = False,
                   n_splits: int = 5) -> Tuple[Any, Dict[str, Any]]:
     """
     Input: texts, encoded labels, vectorizer, estimator, metadata flags, CV splits.
@@ -232,7 +233,7 @@ def train_with_cv(X_text: pd.Series,
         "vec__word__max_features": [75,100,125,150,200,225, 300, 500, 750],
     }
 
-    if args.use_char:
+    if use_char:
         param_grid.update({
             "vec__char__ngram_range": [(3,5)],          # או [(3,5), (3,6)]
             "vec__char__max_features": [2000, 5000],    # טווח סביר להתחלה
