@@ -113,8 +113,12 @@ def eval_slices(
         work["age_group"] = "NA"
 
     # Prepare plots dir (if saving requested)
+    # Create perGroupGraphs subdirectory for group plots
+    group_plots_dir = None
     if plots_dir is not None:
         os.makedirs(plots_dir, exist_ok=True)
+        group_plots_dir = os.path.join(plots_dir, "perGroupGraphs")
+        os.makedirs(group_plots_dir, exist_ok=True)
 
     def _safe_filename(s: str) -> str:
         s = str(s)
@@ -128,6 +132,8 @@ def eval_slices(
             continue
 
         groups = list(work.groupby(col).groups.items())
+        # Process all groups (remove max_groups_per_col limitation for plotting)
+        # Only limit if explicitly set and user wants to limit metrics calculation
         if max_groups_per_col is not None:
             groups = groups[:max_groups_per_col]
 
@@ -161,10 +167,14 @@ def eval_slices(
                 out[group_key] = metrics
 
                 # Plot per group (one figure per group)
+                # Save all group plots in perGroupGraphs subdirectory
                 if do_plots or plots_dir is not None:
                     safe_val = _safe_filename(val)
                     safe_col = _safe_filename(col)
                     fname = f"{plots_prefix}_{safe_col}_{safe_val}.png"
+                    
+                    # Use perGroupGraphs subdirectory for group plots
+                    save_dir = group_plots_dir if group_plots_dir is not None else plots_dir
 
                     plot_aupr_per_class(
                         Y_true=y_t,
@@ -172,7 +182,7 @@ def eval_slices(
                         classes=classes,
                         figsize=figsize,
                         do_plots=do_plots,
-                        plots_dir=plots_dir,
+                        plots_dir=save_dir,
                         title=f"Precision Recall | {group_key} | n={len(idx_list)}",
                         filename=fname,
                     )
@@ -293,7 +303,7 @@ def plot_aupr_per_class(
     Y_prob,
     classes,
     figsize=(8, 6),
-    do_plots: bool = True,
+    display_plots: bool = False,
     plots_dir: str | None = None,
     title: str | None = None,
     filename: str | None = None,
@@ -315,7 +325,7 @@ def plot_aupr_per_class(
     classes : list[str]
         Class names, order must match Y_prob columns.
 
-    do_plots : bool
+    display_plots : bool
         Whether to display the plot.
 
     plots_dir : str or None
@@ -328,7 +338,7 @@ def plot_aupr_per_class(
         Optional filename (without path). If None, auto-generated.
     """
 
-    if not do_plots and plots_dir is None:
+    if not display_plots and plots_dir is None:
         return  # nothing to do
 
     plt.figure(figsize=figsize)
@@ -363,7 +373,7 @@ def plot_aupr_per_class(
     plt.legend(loc="lower left")
     plt.grid(True)
     plt.tight_layout()
-
+    print(f"Saving plot {title} ")
     # ---- Save plot if requested ----
     if plots_dir is not None:
         os.makedirs(plots_dir, exist_ok=True)
@@ -376,7 +386,7 @@ def plot_aupr_per_class(
         )
 
     # ---- Show plot if requested ----
-    if do_plots:
+    if display_plots:
         plt.show()
 
     plt.close()

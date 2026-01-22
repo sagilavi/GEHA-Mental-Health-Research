@@ -56,8 +56,12 @@ from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import LinearSVC
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.model_selection import StratifiedKFold, GridSearchCV
+from sklearn.model_selection import StratifiedKFold, GridSearchCV, ParameterGrid
 from sklearn.multiclass import OneVsRestClassifier
+from contextlib import contextmanager
+from tqdm.auto import tqdm
+import joblib
+from joblib.parallel import BatchCompletionCallBack
 from sklearn.pipeline import FeatureUnion
 from sklearn.metrics import (
     f1_score,
@@ -236,6 +240,23 @@ def stratify_labels(y_array: np.ndarray) -> np.ndarray:
 
 # %%
 
+@contextmanager
+def tqdm_joblib(tqdm_object):
+    """Context manager to patch joblib to report into tqdm progress bar."""
+    old_cb = joblib.parallel.BatchCompletionCallBack
+
+    class TqdmBatchCompletionCallBack(BatchCompletionCallBack):
+        def __call__(self, *args, **kwargs):
+            tqdm_object.update(n=self.batch_size)
+            return super().__call__(*args, **kwargs)
+
+    joblib.parallel.BatchCompletionCallBack = TqdmBatchCompletionCallBack
+    try:
+        yield tqdm_object
+    finally:
+        joblib.parallel.BatchCompletionCallBack = old_cb
+        tqdm_object.close()
+
 def train_with_cv(X_text: pd.Series,
                   y_array: np.ndarray,
                   vectorizer: FeatureUnion,
@@ -302,64 +323,28 @@ def train_with_cv(X_text: pd.Series,
         param_grid["clf__C"] = C_vals
 
 
-    # Calculate total number of fits for progress tracking
-    from itertools import product
-    param_combinations = list(product(*param_grid.values()))
-    total_fits = len(param_combinations) * n_splits
-    
-    print(f"\nStarting GridSearchCV: {len(param_combinations)} parameter combinations × {n_splits} CV folds = {total_fits} total fits")
-    print(f"Progress updates every 150 fits...\n")
-    
-    # Create progress callback for sklearn 1.3+ (if available)
-    # For older versions, we'll use verbose output
-    try:
-        from sklearn.model_selection import Callback
-        import sklearn
-        
-        class ProgressCallback(Callback):
-            """Callback to print progress every N fits."""
-            def __init__(self, print_interval: int = 150, total_fits: int = None):
-                self.print_interval = print_interval
-                self.total_fits = total_fits
-                self.fit_count = 0
-            
-            def on_fit_end(self, estimator, X, y, **kwargs):
-                """Called after each fit completes."""
-                self.fit_count += 1
-                if self.fit_count % self.print_interval == 0:
-                    total_str = f" / {self.total_fits}" if self.total_fits else ""
-                    print(f"Progress: {self.fit_count}{total_str} fits completed", flush=True)
-        
-        # Check if sklearn version supports callbacks (1.3+)
-        sklearn_version = tuple(map(int, sklearn.__version__.split(".")[:2]))
-        use_callbacks = sklearn_version >= (1, 3)
-    except (ImportError, AttributeError):
-        use_callbacks = False
-    
+    # Calculate total number of fits for progress tracking with tqdm + joblib
     cv = StratifiedKFold(n_splits=n_splits, shuffle=shuffle, random_state=random_state)
     
-    # Build GridSearchCV with callback if available, otherwise use verbose
-    gs_kwargs = {
-        "param_grid": param_grid,
-        "scoring": scoring,
-        "cv": cv.split(X_text, stratify_labels(y_array)),
-        "n_jobs": n_jobs,
-        "verbose": verbose if not use_callbacks else 0,  # Reduce verbose if using callback
-        "refit": True,
-    }
+    n_candidates = len(list(ParameterGrid(param_grid)))
+    n_splits_for_total = cv.get_n_splits(X_text, stratify_labels(y_array))
+    total_fits = n_candidates * n_splits_for_total
     
-    if use_callbacks:
-        progress_callback = ProgressCallback(print_interval=150, total_fits=total_fits)
-        gs_kwargs["callbacks"] = [progress_callback]
+    print(f"\nStarting GridSearchCV: {n_candidates} parameter combinations × {n_splits_for_total} CV folds = {total_fits} total fits")
     
-    search = GridSearchCV(pipe, **gs_kwargs)
+    search = GridSearchCV(
+        pipe,
+        param_grid=param_grid,
+        scoring=scoring,
+        cv=cv.split(X_text, stratify_labels(y_array)),
+        n_jobs=n_jobs,
+        verbose=0,  # Verbose should be 0 here as tqdm handles progress
+        refit=True,
+    )
     
-    search.fit(pd.DataFrame({"text": X_text}), y_array)
-    
-    if use_callbacks:
-        print(f"\nGridSearchCV completed: {progress_callback.fit_count} fits finished\n")
-    else:
-        print(f"\nGridSearchCV completed: {total_fits} fits finished\n")
+    # Run GridSearchCV with tqdm progress bar
+    with tqdm_joblib(tqdm(total=total_fits, desc="GridSearch fits")):
+        search.fit(pd.DataFrame({"text": X_text}), y_array)
     best = search.best_estimator_
     info = {
         "best_params": search.best_params_,
@@ -439,5 +424,4 @@ def predict_proba_safe(model, X_df):
 
 # %% [markdown]
 # Explain a bit what is happening here
-
 
